@@ -32,7 +32,10 @@ app.add_middleware(
 )
 SIA_URL = "https://irsa.ipac.caltech.edu/SIA"
 IRSA_HOST = "irsa.ipac.caltech.edu"
-IRSA_PRODUCT_PREFIX = "/ibe/data/spherex/dr1/"
+IRSA_PRODUCT_PREFIXES = (
+    "/ibe/data/spherex/dr1/",
+    "/ibe/data/spherex/qr3/",
+)
 CACHE_SECONDS = 900
 PRODUCT_CACHE_SECONDS = 900
 PRODUCT_CACHE_MAX_BYTES = 256 * 1024 * 1024
@@ -68,7 +71,7 @@ def _validate_product_url(url: str) -> httpx.URL:
     if (
         parsed.scheme != "https"
         or parsed.host != IRSA_HOST
-        or not parsed.path.startswith(IRSA_PRODUCT_PREFIX)
+        or not parsed.path.startswith(IRSA_PRODUCT_PREFIXES)
         or parsed.query
         or parsed.fragment
         or PurePosixPath(parsed.path).suffix.lower() not in {".fits", ".fit", ".fz"}
@@ -94,7 +97,7 @@ async def _fetch_product(url: httpx.URL) -> bytes:
         async with _client.stream("GET", url) as upstream:
             if not upstream.is_success:
                 raise HTTPException(status_code=502, detail="Could not retrieve the IRSA product.")
-            if upstream.url.host != IRSA_HOST or not upstream.url.path.startswith(IRSA_PRODUCT_PREFIX):
+            if upstream.url.host != IRSA_HOST or not upstream.url.path.startswith(IRSA_PRODUCT_PREFIXES):
                 raise HTTPException(status_code=502, detail="IRSA redirected the product to an unsupported location.")
             content_length = upstream.headers.get("content-length")
             if content_length and int(content_length) > MAX_PRODUCT_BYTES:
@@ -128,16 +131,7 @@ def _parse_collection_names(raw: str) -> list[str]:
     return collections or ["spherex_dr1"]
 
 
-@app.get("/api/irsa/sia")
-async def search_spherex(
-    ra: float = Query(ge=0, le=360),
-    dec: float = Query(ge=-90, le=90),
-    radius: float = Query(default=0.1, gt=0, le=1),
-    collections: str = Query(default="spherex_dr1", min_length=1, max_length=256),
-    maxrec: int = Query(default=500, ge=1, le=1000),
-) -> Response:
-    selected_collections = _parse_collection_names(collections)
-    cache_key = f"{ra:.5f}:{dec:.5f}:{radius:.5f}:{','.join(selected_collections)}:{maxrec}"
+async def _search_irsa(params: list[tuple[str, str]], cache_key: str) -> Response:
     now = time.monotonic()
     async with _cache_lock:
         cached = _cache.get(cache_key)
@@ -151,12 +145,8 @@ async def search_spherex(
     try:
         upstream = await _client.get(
             SIA_URL,
-            params={
-                "COLLECTION": ",".join(selected_collections),
-                "POS": f"CIRCLE {ra} {dec} {radius}",
-                "MAXREC": str(maxrec),
-                "RESPONSEFORMAT": "VOTABLE",
-            },
+            params=params,
+            timeout=httpx.Timeout(45.0, connect=15.0),
         )
     except httpx.TimeoutException as error:
         raise HTTPException(status_code=504, detail="IRSA did not respond before the search timed out.") from error
@@ -172,6 +162,45 @@ async def search_spherex(
             oldest = min(_cache, key=lambda key: _cache[key][0])
             del _cache[oldest]
     return Response(content, media_type="application/x-votable+xml", headers={"X-Archive-Cache": "MISS"})
+
+
+@app.get("/api/irsa/sia")
+async def search_spherex(
+    ra: float = Query(ge=0, le=360),
+    dec: float = Query(ge=-90, le=90),
+    radius: float = Query(default=0.1, gt=0, le=1),
+    collections: str = Query(default="spherex_dr1", min_length=1, max_length=256),
+    maxrec: int = Query(default=500, ge=1, le=1000),
+) -> Response:
+    selected_collections = _parse_collection_names(collections)
+    cache_key = f"{ra:.5f}:{dec:.5f}:{radius:.5f}:{','.join(selected_collections)}:{maxrec}"
+    params = [("COLLECTION", collection) for collection in selected_collections]
+    params.extend([
+        ("POS", f"CIRCLE {ra} {dec} {radius}"),
+        ("MAXREC", str(maxrec)),
+        ("RESPONSEFORMAT", "VOTABLE"),
+    ])
+    return await _search_irsa(params, cache_key)
+
+
+@app.get("/api/irsa/sia/id")
+async def search_spherex_by_id(
+    observation_id: str = Query(min_length=1, max_length=512),
+    collections: str = Query(default="spherex_dr1,spherex_qr3", min_length=1, max_length=256),
+    maxrec: int = Query(default=100, ge=1, le=1000),
+) -> Response:
+    identifier = observation_id.strip()
+    if not identifier or any(ord(char) < 32 for char in identifier):
+        raise HTTPException(status_code=422, detail="A valid SPHEREx observation identifier is required.")
+    selected_collections = _parse_collection_names(collections)
+    cache_key = f"id:{identifier.casefold()}:{','.join(selected_collections)}:{maxrec}"
+    params = [("COLLECTION", collection) for collection in selected_collections]
+    params.extend([
+        ("ID", identifier),
+        ("MAXREC", str(maxrec)),
+        ("RESPONSEFORMAT", "VOTABLE"),
+    ])
+    return await _search_irsa(params, cache_key)
 
 
 @app.get("/api/irsa/product")
@@ -213,11 +242,12 @@ async def get_spherex_png(
     url: str = Query(min_length=1, max_length=2048),
     hdu: int = Query(default=0, ge=0, le=64),
     plane: int = Query(default=0, ge=0, le=4095),
+    max_dimension: int = Query(default=0, ge=0, le=1024),
 ) -> Response:
     product = await _fetch_product(_validate_product_url(url))
     try:
         image = await asyncio.to_thread(read_fits_plane, product, hdu, plane)
-        png = await asyncio.to_thread(render_png, image.data)
+        png = await asyncio.to_thread(render_png, image.data, max_dimension=max_dimension or None)
     except ProductError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except Exception as error:

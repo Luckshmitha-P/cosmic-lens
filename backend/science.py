@@ -122,7 +122,7 @@ def read_fits_plane(content: bytes, hdu_choice: int = 0, plane_index: int = 0) -
         return FitsPlane(image, wcs, metadata, actual_index, [item[0] for item in candidates], plane_index, plane_count)
 
 
-def render_png(data: np.ndarray, *, diverging: bool = False) -> bytes:
+def render_png(data: np.ndarray, *, diverging: bool = False, max_dimension: int | None = None) -> bytes:
     finite = data[np.isfinite(data)]
     if finite.size < 1:
         raise ProductError("No valid pixel values are available for image conversion.")
@@ -155,6 +155,9 @@ def render_png(data: np.ndarray, *, diverging: bool = False) -> bytes:
         stretched = AsinhStretch(a=0.1)(normalized)
         image = np.round(stretched * 255).astype(np.uint8)
         pil_image = Image.fromarray(image, mode="L")
+
+    if max_dimension is not None:
+        pil_image.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
 
     output = BytesIO()
     pil_image.save(output, format="PNG", optimize=True)

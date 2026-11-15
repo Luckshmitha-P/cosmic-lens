@@ -18,6 +18,7 @@ export type SearchResult = {
   observations: Observation[]
   searchedAt: string
   cached: boolean
+  stale?: boolean
 }
 
 export const SPHEREX_COLLECTIONS = [
@@ -126,8 +127,10 @@ function parseVOTable(xml: string): Observation[] {
   return [...tableData.getElementsByTagNameNS('*', 'TR')].map((tr) => {
     const values = [...tr.getElementsByTagNameNS('*', 'TD')].map((td) => td.textContent?.trim() || '')
     const raw = Object.fromEntries(names.map((name, index) => [name, values[index] || '']))
-    const min = Number(fieldValue(raw, 'em_min'))
-    const max = Number(fieldValue(raw, 'em_max'))
+    const minValue = fieldValue(raw, 'em_min')
+    const maxValue = fieldValue(raw, 'em_max')
+    const min = minValue ? Number(minValue) : Number.NaN
+    const max = maxValue ? Number(maxValue) : Number.NaN
     return {
       collection: fieldValue(raw, 'obs_collection', 'collection'),
       target: fieldValue(raw, 'target_name', 'target'),
@@ -144,36 +147,103 @@ function parseVOTable(xml: string): Observation[] {
   }).filter((row) => row.accessUrl || row.previewUrl)
 }
 
+function normalizeCollections(collections?: string[] | string): string[] {
+  const normalized = Array.isArray(collections)
+    ? collections.filter((value): value is string => Boolean(value && value.trim()))
+    : typeof collections === 'string' && collections.trim()
+      ? collections.split(',').map((value) => value.trim()).filter(Boolean)
+      : [...SPHEREX_COLLECTIONS]
+  return normalized.length ? normalized : [...SPHEREX_COLLECTIONS]
+}
+
+function normalizeMaxRec(value?: number): number {
+  return Number.isFinite(value) ? Math.max(1, Math.min(1000, Number(value))) : 500
+}
+
+function observationKey(observation: Observation): string {
+  return observation.accessUrl || observation.previewUrl || observation.raw.obs_id || observation.raw.obs_publisher_did || ''
+}
+
+function uniqueObservations(observations: Observation[]): Observation[] {
+  const seen = new Set<string>()
+  return observations.filter((observation, index) => {
+    const key = observationKey(observation) || `record-${index}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+async function searchArchive(url: string, key: string, allowStale: boolean): Promise<SearchResult> {
+  let staleCache: { storedAt: number; observations: Observation[] } | null = null
+  try {
+    const cached = localStorage.getItem(key)
+    if (cached) {
+      const parsed = JSON.parse(cached) as { storedAt: number; observations: Observation[] }
+      if (Number.isFinite(parsed.storedAt) && Array.isArray(parsed.observations)) {
+        staleCache = { storedAt: parsed.storedAt, observations: parsed.observations }
+        if (Date.now() - parsed.storedAt < CACHE_MS) {
+          return { observations: parsed.observations, searchedAt: new Date(parsed.storedAt).toISOString(), cached: true }
+        }
+      }
+    }
+  } catch {
+    staleCache = null
+  }
+
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(75000) })
+    if (!response.ok) {
+      let detail = ''
+      if (response.headers.get('content-type')?.includes('application/json')) {
+        try {
+          const body = await response.json() as { detail?: unknown }
+          if (typeof body.detail === 'string') detail = body.detail
+        } catch {
+          // Keep the HTTP status visible when a proxy returns malformed JSON.
+        }
+      }
+      throw new Error(`explorer.errorHttp:${response.status}:${detail}`)
+    }
+    const observations = uniqueObservations(parseVOTable(await response.text()))
+    const storedAt = Date.now()
+    try {
+      localStorage.setItem(key, JSON.stringify({ storedAt, observations }))
+    } catch {
+      // Storage is optional; the live archive results remain usable.
+    }
+    return { observations, searchedAt: new Date(storedAt).toISOString(), cached: false }
+  } catch (error) {
+    if (staleCache && allowStale) {
+      return {
+        observations: staleCache.observations,
+        searchedAt: new Date(staleCache.storedAt).toISOString(),
+        cached: true,
+        stale: true,
+      }
+    }
+    if (error instanceof DOMException && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+      throw new Error('explorer.errorTimeout')
+    }
+    if (error instanceof Error && (error.message.startsWith('explorer.') || error.message.startsWith('HTTP '))) throw error
+    throw new Error('explorer.errorNetwork')
+  }
+}
+
 export async function searchSpherex(
   ra: number,
   dec: number,
   radius = 0.1,
-  options: { collections?: string[] | string; maxRec?: number } = {},
+  options: { collections?: string[] | string; maxRec?: number; allowStale?: boolean } = {},
 ): Promise<SearchResult> {
   const normalizedRa = normalizeRa(ra)
   const normalizedDec = normalizeDec(dec)
   if (!Number.isFinite(ra) || ra < 0 || ra > 360 || !Number.isFinite(dec) || dec < -90 || dec > 90) {
     throw new Error('explorer.errorInvalid')
   }
-  const collections = Array.isArray(options.collections)
-    ? options.collections.filter((value): value is string => Boolean(value && value.trim()))
-    : typeof options.collections === 'string' && options.collections.trim()
-      ? options.collections.split(',').map((value) => value.trim()).filter(Boolean)
-      : ['spherex_dr1']
-  const maxRec = Number.isFinite(options.maxRec) ? Math.max(1, Math.min(1000, Number(options.maxRec))) : 500
-  const key = `cosmic-lens-sia:${normalizedRa.toFixed(5)}:${normalizedDec.toFixed(5)}:${radius}:${collections.join(',')}:${maxRec}`
-  try {
-    const cached = localStorage.getItem(key)
-    if (cached) {
-      const parsed = JSON.parse(cached) as { storedAt: number; observations: Observation[] }
-      if (Date.now() - parsed.storedAt < CACHE_MS) {
-        return { observations: parsed.observations, searchedAt: new Date(parsed.storedAt).toISOString(), cached: true }
-      }
-    }
-  } catch {
-    // A blocked or malformed local cache should not prevent a fresh archive search.
-  }
-
+  const collections = normalizeCollections(options.collections)
+  const maxRec = normalizeMaxRec(options.maxRec)
+  const key = `cosmic-lens-sia:${normalizedRa}:${normalizedDec}:${radius}:${collections.join(',')}:${maxRec}`
   const params = new URLSearchParams({
     ra: String(normalizedRa),
     dec: String(normalizedDec),
@@ -181,26 +251,24 @@ export async function searchSpherex(
     collections: collections.join(','),
     maxrec: String(maxRec),
   })
-  let response: Response
-  try {
-    response = await fetch(apiUrl(`/api/irsa/sia?${params.toString()}`), { signal: AbortSignal.timeout(90000) })
-  } catch (error) {
-    if (error instanceof DOMException && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
-      throw new Error('explorer.errorTimeout')
-    }
-    throw new Error('explorer.errorNetwork')
-  }
-  if (!response.ok) throw new Error(`explorer.errorHttp:${response.status}`)
-  const observations = parseVOTable(await response.text()).filter((observation, index, list) => (
-    Boolean(observation.accessUrl) && list.findIndex((candidate) => candidate.accessUrl === observation.accessUrl) === index
-  ))
-  const storedAt = Date.now()
-  try {
-    localStorage.setItem(key, JSON.stringify({ storedAt, observations }))
-  } catch {
-    // Storage is optional; the live search remains usable.
-  }
-  return { observations, searchedAt: new Date(storedAt).toISOString(), cached: false }
+  return searchArchive(apiUrl(`/api/irsa/sia?${params.toString()}`), key, Boolean(options.allowStale))
+}
+
+export async function searchSpherexById(
+  observationId: string,
+  options: { collections?: string[] | string; maxRec?: number; allowStale?: boolean } = {},
+): Promise<SearchResult> {
+  const identifier = observationId.trim()
+  if (!identifier) throw new Error('explorer.errorIdRequired')
+  const collections = normalizeCollections(options.collections)
+  const maxRec = normalizeMaxRec(options.maxRec)
+  const params = new URLSearchParams({
+    observation_id: identifier,
+    collections: collections.join(','),
+    maxrec: String(maxRec),
+  })
+  const cacheKey = `cosmic-lens-sia:id:${identifier.toLowerCase()}:${collections.join(',')}:${maxRec}`
+  return searchArchive(apiUrl(`/api/irsa/sia/id?${params.toString()}`), cacheKey, Boolean(options.allowStale))
 }
 
 export function archiveSearchUrl(
@@ -212,11 +280,25 @@ export function archiveSearchUrl(
   const normalizedCollections = Array.isArray(collections)
     ? collections.filter((value) => value && value.trim())
     : collections.split(',').map((value) => value.trim()).filter(Boolean)
-  const query = new URLSearchParams({
-    COLLECTION: (normalizedCollections.length ? normalizedCollections : ['spherex_dr1']).join(','),
-    POS: `CIRCLE ${normalizeRa(ra)} ${normalizeDec(dec)} ${radius}`,
-    MAXREC: '500',
-  })
+  const query = new URLSearchParams()
+  for (const collection of (normalizedCollections.length ? normalizedCollections : ['spherex_dr1'])) {
+    query.append('COLLECTION', collection)
+  }
+  query.set('POS', `CIRCLE ${normalizeRa(ra)} ${normalizeDec(dec)} ${radius}`)
+  query.set('MAXREC', '500')
+  return `https://irsa.ipac.caltech.edu/SIA?${query.toString()}`
+}
+
+export function archiveIdSearchUrl(observationId: string, collections: string[] | string = [...SPHEREX_COLLECTIONS]): string {
+  const normalizedCollections = Array.isArray(collections)
+    ? collections.filter((value) => value && value.trim())
+    : collections.split(',').map((value) => value.trim()).filter(Boolean)
+  const query = new URLSearchParams()
+  for (const collection of (normalizedCollections.length ? normalizedCollections : [...SPHEREX_COLLECTIONS])) {
+    query.append('COLLECTION', collection)
+  }
+  query.set('ID', observationId.trim())
+  query.set('MAXREC', '500')
   return `https://irsa.ipac.caltech.edu/SIA?${query.toString()}`
 }
 

@@ -1,18 +1,18 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
-  Activity, ArrowLeftRight, ArrowUpRight, BadgeCheck, BookOpen, Check, CircleHelp,
+  Activity, ArrowLeftRight, ArrowUpRight, BadgeCheck, BookOpen, Check, ChevronLeft, ChevronRight, CircleHelp,
   Clock3, Compass, Download, ExternalLink, Expand, FileText, Focus, Globe2, Image, Info, Languages, Layers,
   Menu, MoveHorizontal, Orbit, Radio, RotateCcw, Search, ShieldAlert, Sparkles, Telescope, Waves, X,
 } from 'lucide-react'
 import {
-  archiveSearchUrl, formatObservationDate, formatObservationTimestamp, IRSA_DOCS, IRSA_EXPLORER, observationDateKey, observationTimeValue,
-  resolveCollections, searchSpherex, type CollectionMode, type Observation,
+  archiveIdSearchUrl, archiveSearchUrl, formatObservationDate, formatObservationTimestamp, IRSA_DOCS, IRSA_EXPLORER, observationDateKey, observationTimeValue,
+  resolveCollections, searchSpherex, searchSpherexById, type CollectionMode, type Observation,
 } from './services/irsa'
 import { searchNasaImages, type NasaImage } from './services/nasa'
 import { apiUrl } from './services/api'
 import {
-  productComparisonProxyUrl, productDownloadProxyUrl, productPngProxyUrl,
+  productComparisonProxyUrl, productDownloadProxyUrl, productPngProxyUrl, productThumbnailProxyUrl,
   type FitsComparison, type FitsImage,
 } from './services/fits'
 import { languageOptions } from './i18n'
@@ -26,6 +26,7 @@ type ComparisonEvidence = {
   earlierDate: string
   laterDate: string
 }
+type OpenProductState = { observation: Observation; observations: Observation[] }
 
 const navigation: { id: Page; labelKey: string; icon: typeof Orbit }[] = [
   { id: 'home', labelKey: 'nav.home', icon: Orbit },
@@ -72,7 +73,7 @@ function App() {
   const page = usePage()
   const [menuOpen, setMenuOpen] = useState(false)
   const [splashVisible, setSplashVisible] = useState(true)
-  const [openedProduct, setOpenedProduct] = useState<Observation | null>(null)
+  const [openedProduct, setOpenedProduct] = useState<OpenProductState | null>(null)
   const [comparisonPosition, setComparisonPosition] = useState<{ ra: string; dec: string } | null>(null)
   const [comparisonEvidence, setComparisonEvidence] = useState<ComparisonEvidence | null>(null)
   const [groups, setGroups] = useState<ImageGroup[]>([
@@ -82,6 +83,9 @@ function App() {
     { label: 'Star-forming regions', query: 'NASA star formation nebula' },
   ])
   const [heroImage, setHeroImage] = useState<NasaImage>()
+  const openProduct = (observation: Observation, observations: Observation[] = [observation]) => {
+    setOpenedProduct({ observation, observations })
+  }
 
   useEffect(() => {
     const timer = window.setTimeout(() => setSplashVisible(false), 1000)
@@ -90,7 +94,7 @@ function App() {
 
   useEffect(() => {
     document.title = 'COSMIC LENS — SPHEREx Universe Explorer'
-    document.documentElement.lang = i18n.resolvedLanguage ?? 'ta'
+    document.documentElement.lang = i18n.resolvedLanguage ?? 'en'
   }, [i18n.resolvedLanguage])
 
   useEffect(() => {
@@ -158,7 +162,7 @@ function App() {
             <label className="language-control">
               <Languages size={15} aria-hidden="true" />
               <span className="language-label">{t('language.label')}</span>
-              <select aria-label={t('language.select')} value={i18n.resolvedLanguage ?? 'ta'}
+              <select aria-label={t('language.select')} value={i18n.resolvedLanguage ?? 'en'}
                 onChange={(event) => { void i18n.changeLanguage(event.target.value) }}>
                 {languageOptions.map(({ code, label }) => <option key={code} value={code}>{label}</option>)}
               </select>
@@ -168,16 +172,21 @@ function App() {
         </header>
         <div className="page-content">
           {page === 'home' && <HomePage navigate={navigate} heroImage={heroImage} groups={groups} />}
-          {page === 'explorer' && <SkyExplorer onOpenProduct={setOpenedProduct} />}
-          {page === 'time-machine' && <TimeMachine initialPosition={comparisonPosition} navigate={navigate} onComparisonChange={setComparisonEvidence} onOpenProduct={setOpenedProduct} />}
+          {page === 'explorer' && <SkyExplorer onOpenProduct={openProduct} onCompareAt={(ra, dec) => { setComparisonPosition({ ra, dec }); navigate('time-machine') }} />}
+          {page === 'time-machine' && <TimeMachine initialPosition={comparisonPosition} navigate={navigate} onComparisonChange={setComparisonEvidence} onOpenProduct={openProduct} />}
           {page === 'spectrum' && <SpectrumViewer />}
-          {page === 'detector' && <ChangeDetector onOpenProduct={setOpenedProduct} onCompareAt={(nextRa, nextDec) => { setComparisonPosition({ ra: nextRa, dec: nextDec }); navigate('time-machine') }} />}
+          {page === 'detector' && <ChangeDetector onOpenProduct={openProduct} onCompareAt={(nextRa, nextDec) => { setComparisonPosition({ ra: nextRa, dec: nextDec }); navigate('time-machine') }} />}
           {page === 'reports' && <Reports evidence={comparisonEvidence} navigate={navigate} />}
           {page === 'learn' && <LearnPage groups={groups} />}
           {page === 'about' && <AboutPage />}
         </div>
       </main>
-      {openedProduct && <FitsProductViewer observation={openedProduct} onClose={() => setOpenedProduct(null)} />}
+      {openedProduct && <FitsProductViewer
+        observation={openedProduct.observation}
+        navigation={openedProduct.observations}
+        onNavigate={(observation) => setOpenedProduct((current) => current ? { ...current, observation } : null)}
+        onClose={() => setOpenedProduct(null)}
+      />}
       {splashVisible && <SplashScreen />}
     </div>
   )
@@ -193,8 +202,13 @@ function SplashScreen() {
   )
 }
 
-function FitsProductViewer({ observation, onClose, compact = false, preservePrevious = false }: {
-  observation: Observation; onClose?: () => void; compact?: boolean; preservePrevious?: boolean
+function FitsProductViewer({ observation, onClose, compact = false, preservePrevious = false, navigation, onNavigate }: {
+  observation: Observation
+  onClose?: () => void
+  compact?: boolean
+  preservePrevious?: boolean
+  navigation?: Observation[]
+  onNavigate?: (observation: Observation) => void
 }) {
   const { t } = useTranslation()
   const viewerRef = useRef<HTMLDivElement>(null)
@@ -211,6 +225,9 @@ function FitsProductViewer({ observation, onClose, compact = false, preservePrev
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [hduChoice, setHduChoice] = useState(0)
   const [plane, setPlane] = useState(0)
+  const navigationIndex = navigation?.findIndex((item) => (
+    item.accessUrl === observation.accessUrl && item.previewUrl === observation.previewUrl
+  )) ?? -1
 
   useEffect(() => () => {
     for (const url of imageUrlsRef.current) URL.revokeObjectURL(url)
@@ -221,6 +238,7 @@ function FitsProductViewer({ observation, onClose, compact = false, preservePrev
   useEffect(() => {
     let active = true
     let objectUrl = ''
+    let timeoutId = 0
     const controller = new AbortController()
     if (!preservePrevious) {
       const previousUrl = imageUrlRef.current
@@ -231,7 +249,21 @@ function FitsProductViewer({ observation, onClose, compact = false, preservePrev
       }
       setImage(null); setImageUrl(''); setPreviousImageUrl(''); setDisplayedObservation(null)
     }
+    if (!observation.accessUrl) {
+      setImage(null)
+      setImageUrl(observation.previewUrl)
+      setDisplayedObservation(observation)
+      setBusy(false)
+      setError(observation.previewUrl ? '' : 'fits.productUnavailable')
+      return () => { active = false }
+    }
     setBusy(true); setError(''); setZoom(1); setPan({ x: 0, y: 0 })
+    timeoutId = window.setTimeout(() => {
+      if (active) {
+        setError('fits.productUnavailable')
+        controller.abort()
+      }
+    }, 90000)
     void (async () => {
       try {
         const response = await fetch(apiUrl(productPngProxyUrl(observation.accessUrl, hduChoice, plane)), { signal: controller.signal })
@@ -272,13 +304,14 @@ function FitsProductViewer({ observation, onClose, compact = false, preservePrev
     })()
     return () => {
       active = false
+      window.clearTimeout(timeoutId)
       controller.abort()
       if (objectUrl) {
         URL.revokeObjectURL(objectUrl)
         imageUrlsRef.current.delete(objectUrl)
       }
     }
-  }, [observation.accessUrl, hduChoice, plane, preservePrevious])
+  }, [observation.accessUrl, observation.previewUrl, observation.date, observation.raw.obs_id, hduChoice, plane, preservePrevious])
 
   useEffect(() => {
     const viewport = viewerRef.current?.querySelector('.fits-viewport')
@@ -304,13 +337,21 @@ function FitsProductViewer({ observation, onClose, compact = false, preservePrev
   const reset = () => { setZoom(1); setPan({ x: 0, y: 0 }) }
   const errorText = error ? t(error) : ''
   const shownObservation = displayedObservation ?? observation
+  const observationId = archiveField(shownObservation, 'obs_id', 'obs_publisher_did')
+  const targetName = shownObservation.target || archiveField(shownObservation, 'target_name') || t('explorer.observation')
+  const facility = archiveField(shownObservation, 'facility_name', 'facility')
+  const instrument = archiveField(shownObservation, 'instrument_name', 'instrument')
+  const hasCoordinates = shownObservation.ra !== '' || shownObservation.dec !== ''
 
   return (
     <div className={compact ? 'fits-inline' : 'fits-modal-backdrop'} role={compact ? undefined : 'presentation'}>
       <section className={`fits-viewer ${compact ? 'fits-viewer-compact' : ''}`} role={compact ? undefined : 'dialog'} aria-modal={compact ? undefined : true} aria-label={t('fits.title')} ref={viewerRef}>
         <div className="fits-viewer-head">
-          <div><div className="eyebrow">{t('fits.source')}</div><h2>{shownObservation.raw.obs_id || shownObservation.target || t('fits.product')}</h2></div>
+          <div><div className="eyebrow">{t('fits.source')}</div><h2>{observationId || targetName || t('fits.product')}</h2></div>
           <div className="fits-toolbar">
+            {navigation && onNavigate && navigation.length > 1 && <button type="button" className="icon-button" onClick={() => { if (navigationIndex > 0) onNavigate(navigation[navigationIndex - 1]) }} disabled={navigationIndex <= 0} aria-label={t('fits.previousImage')}><ChevronLeft size={16} /></button>}
+            {navigation && navigationIndex >= 0 && <span className="fits-image-count">{t('fits.imageCount', { current: navigationIndex + 1, total: navigation.length })}</span>}
+            {navigation && onNavigate && navigation.length > 1 && <button type="button" className="icon-button" onClick={() => { if (navigationIndex >= 0 && navigationIndex < navigation.length - 1) onNavigate(navigation[navigationIndex + 1]) }} disabled={navigationIndex < 0 || navigationIndex >= navigation.length - 1} aria-label={t('fits.nextImage')}><ChevronRight size={16} /></button>}
             <button type="button" className="icon-button" onClick={() => setZoom((value) => Math.min(8, value * 1.25))} aria-label={t('fits.zoomIn')}><span>+</span></button>
             <button type="button" className="icon-button" onClick={() => setZoom((value) => Math.max(1, value / 1.25))} aria-label={t('fits.zoomOut')}><span>−</span></button>
             <button type="button" className="icon-button" onClick={reset} aria-label={t('fits.reset')}><RotateCcw size={15} /></button>
@@ -319,11 +360,16 @@ function FitsProductViewer({ observation, onClose, compact = false, preservePrev
           </div>
         </div>
         <div className="fits-download-row">
-          {imageUrl && <a className="button-secondary" href={imageUrl} download={`${(image?.observation_id || 'spherex-image').replace(/[^a-zA-Z0-9._-]/g, '_')}.png`}><Download size={14} />{t('fits.downloadPng')}</a>}
-          <a className="button-secondary" href={productDownloadProxyUrl(shownObservation.accessUrl)}><Download size={14} />{t('fits.download')}</a>
+          {imageUrl && image && <a className="button-secondary" href={imageUrl} download={`${(image.observation_id || 'spherex-image').replace(/[^a-zA-Z0-9._-]/g, '_')}.png`}><Download size={14} />{t('fits.downloadPng')}</a>}
+          {shownObservation.accessUrl && <a className="button-secondary" href={productDownloadProxyUrl(shownObservation.accessUrl)}><Download size={14} />{t('fits.download')}</a>}
         </div>
         <div className="fits-product-meta">
           <span>{t('fits.observation')}: {formatObservationDate(shownObservation.date) || t('fits.notAvailable')}</span>
+          {observationId && <span>{t('fits.id')}: {observationId}</span>}
+          {shownObservation.target && <span>{t('explorer.target')}: {shownObservation.target}</span>}
+          {facility && <span>{t('fits.facility')}: {facility}</span>}
+          {instrument && <span>{t('fits.instrument')}: {instrument}</span>}
+          {hasCoordinates && <span>{t('fits.coordinates')}: {shownObservation.ra || t('fits.notAvailable')}°, {shownObservation.dec || t('fits.notAvailable')}°</span>}
           {shownObservation.wavelengthMin !== null && shownObservation.wavelengthMax !== null && <span>{t('fits.wavelength')}: {(shownObservation.wavelengthMin * 1e6).toFixed(2)}–{(shownObservation.wavelengthMax * 1e6).toFixed(2)} μm</span>}
           {image && (
             <>
@@ -339,13 +385,14 @@ function FitsProductViewer({ observation, onClose, compact = false, preservePrev
         <div className={`fits-viewport ${preservePrevious ? 'fits-viewport-transition' : ''} ${busy && preservePrevious && imageUrl ? 'fits-viewport-loading-next' : ''}`} onPointerDown={startPan} onPointerMove={movePan} onPointerUp={stopPan} onPointerCancel={stopPan}>
           {preservePrevious ? <div className="fits-canvas-stack">
             {previousImageUrl && <img key={`previous-${previousImageUrl}`} src={previousImageUrl} className="fits-canvas fits-canvas-previous" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} alt="" aria-hidden="true" />}
-            {imageUrl && <img key={imageUrl} src={imageUrl} className="fits-canvas fits-canvas-current" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} alt={t('fits.imageAlt')} />}
-          </div> : imageUrl && <img src={imageUrl} className="fits-canvas" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} alt={t('fits.imageAlt')} />}
+            {imageUrl && <img key={imageUrl} src={imageUrl} className="fits-canvas fits-canvas-current" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} alt={t('fits.imageAlt')} onError={() => { setError('fits.productUnavailable'); setBusy(false) }} />}
+          </div> : imageUrl && <img src={imageUrl} className="fits-canvas" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} alt={t('fits.imageAlt')} onError={() => { setError('fits.productUnavailable'); setBusy(false) }} />}
           {busy && (!preservePrevious || !imageUrl) && <div className="loading-state"><span className="spinner" />{t('fits.loading')}</div>}
           {busy && preservePrevious && imageUrl && <div className="fits-transition-status" role="status"><span className="spinner" />{t('fits.loading')}</div>}
           {!busy && error && preservePrevious && imageUrl && <div className="fits-transition-error" role="status"><b>{t('fits.errorTitle')}</b><span>{errorText}</span></div>}
           {!busy && error && (!preservePrevious || !imageUrl) && <div className="empty-state"><Image size={20} /><b>{t('fits.errorTitle')}</b><span>{errorText}</span></div>}
         </div>
+        {!shownObservation.accessUrl && shownObservation.previewUrl && <p className="fits-preview-only">{t('fits.previewOnly')}</p>}
         {image && <div className="fits-viewer-foot"><span>{t('fits.staticImage')} · {t('fits.axis')}: {image.axis1} × {image.axis2}</span><span>{t('fits.zoom')}: {Math.round(zoom * 100)}%</span></div>}
       </section>
     </div>
@@ -438,35 +485,84 @@ function ReferenceCard({ group, compact = false }: { group: ImageGroup; compact?
   )
 }
 
-function SkyExplorer({ onOpenProduct }: { onOpenProduct: (observation: Observation) => void }) {
+function archiveField(observation: Observation, ...names: string[]): string {
+  const matchingNames = new Set(names.map((name) => name.toLowerCase()))
+  const entry = Object.entries(observation.raw).find(([key, value]) => matchingNames.has(key.toLowerCase()) && value)
+  return entry?.[1] ?? ''
+}
+
+function ObservationThumbnail({ observation, onOpen }: { observation: Observation; onOpen: () => void }) {
+  const { t } = useTranslation()
+  const [useFitsPreview, setUseFitsPreview] = useState(!observation.previewUrl)
+  const [failed, setFailed] = useState(false)
+  const hasPreview = Boolean(observation.previewUrl || observation.accessUrl)
+  const imageUrl = useFitsPreview && observation.accessUrl
+    ? productThumbnailProxyUrl(observation.accessUrl)
+    : observation.previewUrl
+  const handleImageError = () => {
+    if (!useFitsPreview && observation.accessUrl) setUseFitsPreview(true)
+    else setFailed(true)
+  }
+
+  return (
+    <button type="button" className="archive-result-image" onClick={onOpen} disabled={!hasPreview}
+      aria-label={t('explorer.openPreview', { id: archiveField(observation, 'obs_id') || observation.target || t('explorer.observation') })}>
+      {imageUrl && !failed
+        ? <img src={imageUrl} alt={t('explorer.thumbnailAlt', { id: archiveField(observation, 'obs_id') || observation.target || t('explorer.observation') })} loading="lazy" decoding="async" onError={handleImageError} />
+        : <span className="archive-thumbnail-empty"><Image size={20} />{t('explorer.previewUnavailable')}</span>}
+      {hasPreview && <span className="archive-image-open"><Expand size={14} /></span>}
+    </button>
+  )
+}
+
+function SkyExplorer({ onOpenProduct, onCompareAt }: {
+  onOpenProduct: (observation: Observation, observations?: Observation[]) => void
+  onCompareAt: (ra: string, dec: string) => void
+}) {
   const { t, i18n } = useTranslation()
   const [ra, setRa] = useState('83.822')
   const [dec, setDec] = useState('-5.391')
+  const [observationId, setObservationId] = useState('')
+  const [searchMode, setSearchMode] = useState<'position' | 'id'>('position')
   const [collectionMode, setCollectionMode] = useState<CollectionMode>('both')
   const [observations, setObservations] = useState<Observation[]>([])
+  const [visibleCount, setVisibleCount] = useState(24)
   const [searchedAt, setSearchedAt] = useState('')
   const [cached, setCached] = useState(false)
+  const [stale, setStale] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [searched, setSearched] = useState(false)
   async function search(event: FormEvent) {
     event.preventDefault()
-    setError(''); setLoading(true); setSearched(true)
+    setError(''); setLoading(true); setSearched(true); setObservations([]); setVisibleCount(24); setSearchedAt(''); setStale(false)
     try {
-      const result = await searchSpherex(Number(ra), Number(dec), 0.1, {
-        collections: resolveCollections(collectionMode),
-        maxRec: 200,
-      })
-      setObservations(result.observations); setSearchedAt(result.searchedAt); setCached(result.cached)
+      const collections = resolveCollections(collectionMode)
+      const result = searchMode === 'id'
+        ? await searchSpherexById(observationId, { collections, maxRec: 1000, allowStale: true })
+        : await searchSpherex(Number(ra), Number(dec), 0.1, { collections, maxRec: 1000, allowStale: true })
+      setObservations(result.observations)
+      setSearchedAt(result.searchedAt)
+      setCached(result.cached)
+      setStale(Boolean(result.stale))
     } catch (reason) {
       console.error('SPHEREx archive search failed:', reason)
       const message = reason instanceof Error ? reason.message : 'explorer.errorQuery'
-      setError(message.startsWith('explorer.errorHttp:')
-        ? t('explorer.errorHttp', { status: message.split(':')[1] })
-        : message.startsWith('explorer.') ? t(message) : t('explorer.errorQuery'))
-      setObservations([])
+      if (message.startsWith('explorer.errorHttp:')) {
+        const [, status, ...detailParts] = message.split(':')
+        const detail = detailParts.join(':').trim()
+        setError(`${t('explorer.errorHttp', { status })}${detail ? ` ${detail}` : ''}`)
+      } else {
+        setError(message.startsWith('explorer.') ? t(message) : t('explorer.errorQuery'))
+      }
     } finally { setLoading(false) }
   }
+  const openSearchedProduct = (observation: Observation) => onOpenProduct(observation, observations)
+  const archiveUrl = searchMode === 'id'
+    ? archiveIdSearchUrl(observationId, resolveCollections(collectionMode))
+    : archiveSearchUrl(Number(ra) || 0, Number(dec) || 0, resolveCollections(collectionMode))
+  const visibleObservations = observations.slice(0, visibleCount)
+
   return (
     <div>
       <PageIntro eyebrow={t('explorer.eyebrow')} title={t('explorer.title')} description={t('explorer.description')} icon={Compass} />
@@ -474,20 +570,26 @@ function SkyExplorer({ onOpenProduct }: { onOpenProduct: (observation: Observati
         <section className="panel search-panel">
           <div className="panel-title-row"><div><div className="eyebrow">{t('explorer.searchArchive')}</div><h2>{t('explorer.choosePosition')}</h2></div><span className="archive-badge"><span className="live-dot" /> {t('explorer.release')}</span></div>
           <form onSubmit={search}>
-            <div className="field-grid">
-              <label>{t('explorer.ra')} <span>{t('explorer.degrees')}</span><input type="number" step="any" min="0" max="360" value={ra} onChange={(event) => setRa(event.target.value)} required /><small>{t('explorer.raRange')}</small></label>
-              <label>{t('explorer.dec')} <span>{t('explorer.degrees')}</span><input type="number" step="any" min="-90" max="90" value={dec} onChange={(event) => setDec(event.target.value)} required /><small>{t('explorer.decRange')}</small></label>
+            <div className="mode-tabs explorer-search-modes" role="group" aria-label={t('explorer.searchType')}>
+              <button type="button" className={searchMode === 'position' ? 'mode-selected' : ''} aria-pressed={searchMode === 'position'} onClick={() => setSearchMode('position')}>{t('explorer.searchByPosition')}</button>
+              <button type="button" className={searchMode === 'id' ? 'mode-selected' : ''} aria-pressed={searchMode === 'id'} onClick={() => setSearchMode('id')}>{t('explorer.searchById')}</button>
             </div>
+            {searchMode === 'position'
+              ? <div className="field-grid">
+                <label>{t('explorer.ra')} <span>{t('explorer.degrees')}</span><input type="number" step="any" min="0" max="360" value={ra} onChange={(event) => setRa(event.target.value)} required /><small>{t('explorer.raRange')}</small></label>
+                <label>{t('explorer.dec')} <span>{t('explorer.degrees')}</span><input type="number" step="any" min="-90" max="90" value={dec} onChange={(event) => setDec(event.target.value)} required /><small>{t('explorer.decRange')}</small></label>
+              </div>
+              : <label className="field-inline explorer-id-field">{t('explorer.observationId')}<input type="search" value={observationId} onChange={(event) => setObservationId(event.target.value)} placeholder={t('explorer.observationIdPlaceholder')} maxLength={512} required /></label>}
             <label className="field-inline">
-              Archive collection
+              {t('explorer.collection')}
               <select value={collectionMode} onChange={(event) => setCollectionMode(event.target.value as CollectionMode)}>
-                <option value="wide">Wide survey</option>
-                <option value="deep">Deep survey</option>
-                <option value="both">Wide + deep</option>
+                <option value="wide">{t('explorer.wideSurvey')}</option>
+                <option value="deep">{t('explorer.deepSurvey')}</option>
+                <option value="both">{t('explorer.bothSurveys')}</option>
               </select>
             </label>
-            <div className="coordinate-note"><Info size={14} /> {t('explorer.example')}</div>
-            <button className="button-primary search-submit" disabled={loading}>{loading ? <span className="spinner" /> : <Search size={16} />}{loading ? t('explorer.searching') : t('explorer.search')}<ArrowUpRight size={15} /></button>
+            {searchMode === 'position' && <div className="coordinate-note"><Info size={14} /> {t('explorer.example')}</div>}
+            <button className="button-primary search-submit" disabled={loading}>{loading ? <span className="spinner" /> : <Search size={16} />}{loading ? t('explorer.searching') : searchMode === 'id' ? t('explorer.searchIdSubmit') : t('explorer.search')}<ArrowUpRight size={15} /></button>
           </form>
           <div className="search-foot"><span><Info size={14} /> {t('explorer.metadataOnly')}</span><a href={IRSA_EXPLORER} target="_blank" rel="noreferrer">{t('explorer.viewIrsa')} <ExternalLink size={12} /></a></div>
         </section>
@@ -499,13 +601,51 @@ function SkyExplorer({ onOpenProduct }: { onOpenProduct: (observation: Observati
         </section>
       </div>
       <section className="panel results-panel">
-        <div className="panel-title-row"><div><div className="eyebrow">{t('explorer.results')}</div><h2>{t('explorer.archiveResults')} <span className="muted-count">{observations.length ? observations.length : ''}</span></h2></div>{searchedAt && <span className="updated-note"><Clock3 size={13} /> {cached ? t('explorer.cached') : t('explorer.retrieved')} {new Date(searchedAt).toLocaleTimeString(i18n.resolvedLanguage)}</span>}</div>
+        <div className="panel-title-row archive-gallery-heading">
+          <div><div className="eyebrow">{t('explorer.results')}</div><h2>{t('explorer.archiveResults')} <span className="muted-count">{observations.length}</span></h2></div>
+          {searchedAt && <span className="updated-note"><Clock3 size={13} />{stale ? t('explorer.staleCache') : cached ? t('explorer.cached') : t('explorer.retrieved')} {new Date(searchedAt).toLocaleTimeString(i18n.resolvedLanguage)}</span>}
+        </div>
         {loading && <div className="loading-state"><span className="spinner" />{t('explorer.loading')}</div>}
-        {!loading && error && <div className="error-state"><ShieldAlert size={18} /><div><b>{t('explorer.errorTitle')}</b><span>{error}</span><a href={archiveSearchUrl(Number(ra) || 0, Number(dec) || 0, resolveCollections(collectionMode))} target="_blank" rel="noreferrer">{t('explorer.openSia')} <ArrowUpRight size={13} /></a></div></div>}
-        {!loading && !error && searched && observations.length === 0 && <div className="empty-state"><Image size={20} /><b>{t('explorer.noResults')}</b><span>{t('explorer.noResultsHelp')}</span><a href={IRSA_EXPLORER} target="_blank" rel="noreferrer">{t('explorer.exploreData')} <ArrowUpRight size={13} /></a></div>}
+        {!loading && error && <div className="error-state"><ShieldAlert size={18} /><div><b>{t('explorer.errorTitle')}</b><span>{error}</span><a href={archiveUrl} target="_blank" rel="noreferrer">{t('explorer.openSia')} <ArrowUpRight size={13} /></a></div></div>}
+        {!loading && !error && searched && observations.length === 0 && <div className="empty-state"><Image size={20} /><b>{t('explorer.noResults')}</b><span>{t('explorer.noResultsHelp')}</span><a href={searchMode === 'id' ? IRSA_EXPLORER : archiveUrl} target="_blank" rel="noreferrer">{t('explorer.exploreData')} <ArrowUpRight size={13} /></a></div>}
         {!loading && !error && !searched && <div className="empty-state"><Search size={20} /><b>{t('explorer.ready')}</b><span>{t('explorer.readyHelp')}</span></div>}
-        {!loading && observations.length > 0 && <div className="table-scroll"><table><thead><tr><th>{t('explorer.tableRelease')}</th><th>{t('explorer.target')}</th><th>{t('explorer.observationTime')}</th><th>{t('explorer.wavelength')}</th><th>{t('explorer.product')}</th><th>{t('explorer.data')}</th></tr></thead><tbody>{observations.map((observation, index) => <tr key={`${observation.accessUrl}-${index}`}><td><span className="table-tag">DR1</span></td><td>{observation.target || t('explorer.observation')}</td><td>{formatObservationDate(observation.date) || t('explorer.fitsDate')}</td><td>{observation.wavelengthMin && observation.wavelengthMax ? `${(observation.wavelengthMin * 1e6).toFixed(2)}–${(observation.wavelengthMax * 1e6).toFixed(2)} μm` : t('explorer.productMetadata')}</td><td>{observation.raw.access_format || observation.format || t('explorer.spectralImage')}</td>        <td className="product-actions"><button type="button" onClick={() => onOpenProduct(observation)}>{t('explorer.openProduct')} <ArrowUpRight size={12} /></button><a href={productDownloadProxyUrl(observation.accessUrl)}>{t('fits.download')} <Download size={12} /></a></td></tr>)}</tbody></table></div>}
-        {observations.length > 0 && <div className="result-notice"><Info size={14} /> {t('explorer.resultNotice')}</div>}
+        {observations.length > 0 && <>
+          {stale && <div className="archive-stale-note"><Info size={14} />{t('explorer.staleCacheHelp')}</div>}
+          <div className="archive-result-count">{t('explorer.showingRecords', { count: visibleObservations.length, total: observations.length })}</div>
+          <div className="archive-result-grid">{visibleObservations.map((observation, index) => {
+            const observationId = archiveField(observation, 'obs_id', 'obs_publisher_did')
+            const title = observationId || observation.target || t('explorer.observation')
+            const facility = archiveField(observation, 'facility_name', 'facility')
+            const instrument = archiveField(observation, 'instrument_name', 'instrument')
+            const hasCoordinates = observation.ra !== '' && observation.dec !== ''
+            return <article className="archive-result-card" key={`${observation.accessUrl || observation.previewUrl || observationId}-${index}`}>
+              <ObservationThumbnail observation={observation} onOpen={() => openSearchedProduct(observation)} />
+              <div className="archive-result-info">
+                <div className="archive-result-tags">
+                  <span>{observation.collection || observation.raw.obs_collection || t('explorer.release')}</span>
+                  <span>{observation.accessUrl ? t('explorer.fitsAvailable') : observation.previewUrl ? t('explorer.previewOnly') : t('explorer.recordOnly')}</span>
+                </div>
+                <h3 title={title}>{title}</h3>
+                <p className="archive-result-target">{observation.target || observation.raw.target_name || t('explorer.observation')}</p>
+                <dl>
+                  <div><dt>{t('explorer.observationTime')}</dt><dd>{formatObservationTimestamp(observation.date) || t('fits.notAvailable')}</dd></div>
+                  {(facility || instrument) && <div><dt>{t('explorer.instrument')}</dt><dd>{[facility, instrument].filter(Boolean).join(' · ')}</dd></div>}
+                  <div><dt>{t('explorer.wavelength')}</dt><dd>{observation.wavelengthMin !== null && observation.wavelengthMax !== null
+                    ? `${(observation.wavelengthMin * 1e6).toFixed(2)}–${(observation.wavelengthMax * 1e6).toFixed(2)} μm`
+                    : t('explorer.productMetadata')}</dd></div>
+                  {hasCoordinates && <div><dt>{t('fits.coordinates')}</dt><dd>{Number(observation.ra).toFixed(5)}°, {Number(observation.dec).toFixed(5)}°</dd></div>}
+                </dl>
+                <div className="archive-result-actions">
+                  {(observation.accessUrl || observation.previewUrl) && <button type="button" className="button-secondary" onClick={() => openSearchedProduct(observation)}>{t('explorer.openProduct')} <Expand size={13} /></button>}
+                  {observation.accessUrl && <a className="button-secondary" href={productDownloadProxyUrl(observation.accessUrl)}><Download size={13} />{t('fits.download')}</a>}
+                  {hasCoordinates && observation.accessUrl && <button type="button" className="text-button" onClick={() => onCompareAt(observation.ra, observation.dec)}>{t('explorer.compareBeforeAfter')} <ArrowUpRight size={13} /></button>}
+                </div>
+              </div>
+            </article>
+          })}</div>
+          {visibleCount < observations.length && <div className="archive-load-more"><button type="button" className="button-secondary" onClick={() => setVisibleCount((count) => Math.min(count + 24, observations.length))}>{t('explorer.loadMore')}</button></div>}
+          <div className="result-notice"><Info size={14} /> {t('explorer.resultNotice')}</div>
+        </>}
       </section>
       <div className="citation-strip"><BadgeCheck size={16} /><span>{t('explorer.citation')} <a href="https://doi.org/10.26131/IRSA678" target="_blank" rel="noreferrer">10.26131/IRSA678</a></span><a href={IRSA_DOCS} target="_blank" rel="noreferrer">{t('explorer.documentation')} <ArrowUpRight size={13} /></a></div>
     </div>

@@ -63,9 +63,14 @@ export type FitsComparison = {
   images: { earlier_png: string; later_png: string; difference_png: string }
 }
 
-export function productPngProxyUrl(accessUrl: string, hdu = 0, plane = 0): string {
+export function productPngProxyUrl(accessUrl: string, hdu = 0, plane = 0, maxDimension?: number): string {
   const params = new URLSearchParams({ url: accessUrl, hdu: String(hdu), plane: String(plane) })
+  if (maxDimension !== undefined) params.set('max_dimension', String(maxDimension))
   return apiUrl(`/api/irsa/product/png?${params.toString()}`)
+}
+
+export function productThumbnailProxyUrl(accessUrl: string, maxDimension = 384): string {
+  return productPngProxyUrl(accessUrl, 0, 0, maxDimension)
 }
 
 export function productDownloadProxyUrl(accessUrl: string): string {

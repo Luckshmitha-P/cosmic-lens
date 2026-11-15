@@ -1,0 +1,8 @@
+fastapi>=0.115,<1
+httpx>=0.28,<1
+uvicorn[standard]>=0.34,<1
+astropy>=7.1,<8
+photutils>=2.3,<3
+reproject>=0.15,<1
+pillow>=11,<13
+scipy>=1.11,<2

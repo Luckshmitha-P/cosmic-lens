@@ -668,11 +668,12 @@ function TimeMachine({ initialPosition, navigate, onComparisonChange, onOpenProd
 }) {
   const { t } = useTranslation()
   const comparisonViewerRef = useRef<HTMLDivElement>(null)
+  const comparisonStageRef = useRef<HTMLDivElement>(null)
   const comparisonDragRef = useRef<{ x: number; y: number } | null>(null)
   const [position, setPosition] = useState(50)
   const [comparisonZoom, setComparisonZoom] = useState(1)
   const [comparisonPan, setComparisonPan] = useState({ x: 0, y: 0 })
-  const [mode, setMode] = useState<'slider' | 'side' | 'overlay' | 'difference'>('side')
+  const [mode, setMode] = useState<'slider' | 'side' | 'overlay' | 'difference'>('slider')
   const [ra, setRa] = useState(initialPosition?.ra ?? '83.822')
   const [dec, setDec] = useState(initialPosition?.dec ?? '-5.391')
   const [observations, setObservations] = useState<Observation[]>([])
@@ -760,6 +761,25 @@ function TimeMachine({ initialPosition, navigate, onComparisonChange, onOpenProd
 
   const selectMode = (nextMode: typeof mode) => setMode(nextMode)
   const resetComparisonView = () => { setComparisonZoom(1); setComparisonPan({ x: 0, y: 0 }) }
+  const updateComparisonPosition = (clientX: number) => {
+    const stage = comparisonStageRef.current
+    if (!stage) return
+    const bounds = stage.getBoundingClientRect()
+    if (bounds.width === 0) return
+    setPosition(Math.max(0, Math.min(100, ((clientX - bounds.left) / bounds.width) * 100)))
+  }
+  const startComparisonSliderDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    updateComparisonPosition(event.clientX)
+  }
+  const moveComparisonSlider = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+    event.preventDefault()
+    event.stopPropagation()
+    updateComparisonPosition(event.clientX)
+  }
   const startComparisonPan = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (comparisonZoom <= 1 || (event.target instanceof HTMLElement && event.target.closest('button'))) return
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -838,17 +858,52 @@ function TimeMachine({ initialPosition, navigate, onComparisonChange, onOpenProd
               <SourceImage comparison={comparison} image={comparison.images.earlier_png} date={formatObservationTimestamp(earlier?.date ?? '')} side="earlier" selectedSourceId={selectedSourceId} onSelect={setSelectedSourceId} />
               <SourceImage comparison={comparison} image={comparison.images.later_png} date={formatObservationTimestamp(later?.date ?? '')} side="later" selectedSourceId={selectedSourceId} onSelect={setSelectedSourceId} />
             </>}
-            {(mode === 'slider' || mode === 'overlay') && <div className="science-slider-stage" style={{ aspectRatio: `${comparison.comparison.width} / ${comparison.comparison.height}` }}>
+            {(mode === 'slider' || mode === 'overlay') && <div className="science-slider-stage" ref={comparisonStageRef} style={{ aspectRatio: `${comparison.comparison.width} / ${comparison.comparison.height}` }}>
               <SourceImage comparison={comparison} image={comparison.images.later_png} date={formatObservationTimestamp(later?.date ?? '')} side="later" selectedSourceId={selectedSourceId} onSelect={setSelectedSourceId} />
               <div className="science-old-clip" style={mode === 'slider' ? { clipPath: `inset(0 ${100 - position}% 0 0)` } : undefined}>
                 <SourceImage comparison={comparison} image={comparison.images.earlier_png} date={formatObservationTimestamp(earlier?.date ?? '')} side="earlier" selectedSourceId={selectedSourceId} onSelect={setSelectedSourceId} />
               </div>
-              {mode === 'slider' && <div className="science-slider-handle" style={{ left: `${position}%` }} />}
+              {mode === 'slider' && <>
+                <div className="science-image-side-labels" aria-hidden="true">
+                  <span>{t('time.beforeLabel')}</span>
+                  <span>{t('time.afterLabel')}</span>
+                </div>
+                <button
+                  type="button"
+                  role="slider"
+                  className="science-slider-handle"
+                  style={{ left: `${position}%` }}
+                  aria-label={t('time.moveDivider')}
+                  aria-orientation="horizontal"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(position)}
+                  onPointerDown={startComparisonSliderDrag}
+                  onPointerMove={moveComparisonSlider}
+                  onPointerUp={(event) => {
+                    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+                  }}
+                  onPointerCancel={(event) => {
+                    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+                  }}
+                  onKeyDown={(event) => {
+                    const step = event.shiftKey ? 10 : 1
+                    const next = event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? position - step
+                      : event.key === 'ArrowRight' || event.key === 'ArrowUp' ? position + step
+                        : event.key === 'Home' ? 0
+                          : event.key === 'End' ? 100
+                            : null
+                    if (next !== null) {
+                      event.preventDefault()
+                      setPosition(Math.max(0, Math.min(100, next)))
+                    }
+                  }}
+                />
+              </>}
             </div>}
             {mode === 'difference' && <SourceImage comparison={comparison} image={comparison.images.difference_png} date={t('newUI.alignedDifference')} side="difference" selectedSourceId={selectedSourceId} onSelect={setSelectedSourceId} />}
           </div>
           </div>
-          {mode === 'slider' && <input className="comparison-range" aria-label={t('time.moveDivider')} type="range" min="5" max="95" value={position} onChange={(event) => setPosition(Number(event.target.value))} />}
           <div className="source-legend">
             <span><i className="legend-common" />{t('newUI.status.common')}</span><span><i className="legend-new" />{t('newUI.status.new_candidate')}</span><span><i className="legend-brightness" />{t('newUI.status.brightness_candidate')}</span><span><i className="legend-uncertain" />{t('newUI.status.not_detected_later')}</span>
           </div>
@@ -896,7 +951,7 @@ function SourceImage({ comparison, image, date, side, selectedSourceId, onSelect
   onSelect: (id: string) => void
 }) {
   const { t } = useTranslation()
-  const sideLabel = side === 'earlier' ? t('newUI.earlierImage') : side === 'later' ? t('newUI.laterImage') : t('newUI.alignedDifference')
+  const sideLabel = side === 'earlier' ? t('time.beforeLabel') : side === 'later' ? t('time.afterLabel') : t('newUI.alignedDifference')
   const availableSources = comparison.sources.filter((source) => (
     side === 'earlier' ? source.earlier !== null
       : side === 'later' ? source.later !== null

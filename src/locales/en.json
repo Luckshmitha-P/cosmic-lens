@@ -93,7 +93,7 @@
     "oldReference": "OLD · NASA REFERENCE", "differenceUnavailable": "Difference view unavailable",
     "noMeasuredDifference": "No measured difference image",
     "differenceHelp": "Neither NASA reference image is paired survey data, so no difference calculation is performed.",
-    "moveDivider": "Move comparison divider",
+    "moveDivider": "Move comparison divider", "beforeLabel": "BEFORE", "afterLabel": "AFTER",
     "differenceDisabled": "Difference visualization is disabled without matched data.",
     "dragHelp": "Drag the divider to explore this illustrative layout.",
     "referenceNotSpherex": "NASA reference imagery · not SPHEREx", "notObservation": "Not an observation",

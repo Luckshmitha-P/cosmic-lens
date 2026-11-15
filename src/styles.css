@@ -660,8 +660,12 @@ html:lang(ta) select, html:lang(ml) select, html:lang(te) select, html:lang(hi) 
 .science-old-clip { position: absolute; z-index: 2; inset: 0; overflow: hidden; }
 .science-old-clip .science-image { height: 100%; }
 .science-images.mode-overlay .science-old-clip .science-image > img { opacity: .56; mix-blend-mode: screen; }
-.science-slider-handle { position: absolute; z-index: 4; top: 0; bottom: 0; width: 2px; background: #eee8ff; box-shadow: 0 0 7px #000b; }
-.science-slider-handle::after { content: '↔'; position: absolute; top: 50%; left: 50%; width: 26px; height: 26px; display: grid; place-items: center; color: #f2ecff; background: #211a37; border: 1px solid #d5c3ff; border-radius: 50%; transform: translate(-50%, -50%); font-size: 13px; }
+.science-image-side-labels { position: absolute; z-index: 3; inset: 10px 12px auto; display: flex; justify-content: space-between; pointer-events: none; }
+.science-image-side-labels span { padding: 5px 8px; color: #f2ecff; background: #080a12bd; border: 1px solid #ffffff24; border-radius: 5px; font: 700 8px var(--mono); letter-spacing: .08em; }
+.science-slider-handle { position: absolute; z-index: 4; top: 0; bottom: 0; width: 44px; margin: 0; padding: 0; transform: translateX(-50%); background: transparent; border: 0; border-radius: 0; cursor: ew-resize; touch-action: none; -webkit-tap-highlight-color: transparent; }
+.science-slider-handle::before { content: ''; position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: #eee8ff; box-shadow: 0 0 7px #000b; transform: translateX(-50%); pointer-events: none; }
+.science-slider-handle::after { content: '↔'; position: absolute; top: 50%; left: 50%; width: 30px; height: 30px; display: grid; place-items: center; color: #f2ecff; background: #211a37; border: 1px solid #d5c3ff; border-radius: 50%; transform: translate(-50%, -50%); font-size: 14px; pointer-events: none; }
+.science-slider-handle:focus-visible { outline: 2px solid #d5c3ff; outline-offset: -2px; }
 .source-markers { position: absolute; inset: 0; pointer-events: none; }
 .source-marker { position: absolute; width: 11px; height: 11px; padding: 0; background: transparent; border: 2px solid #a2edbe; border-radius: 50%; transform: translate(-50%, -50%); pointer-events: auto; cursor: pointer; }
 .marker-common { border-color: #57d98c; }

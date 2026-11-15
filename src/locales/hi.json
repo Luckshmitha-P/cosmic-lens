@@ -82,7 +82,7 @@
     "oldReference": "पुराना · NASA संदर्भ", "differenceUnavailable": "अंतर दृश्य उपलब्ध नहीं",
     "noMeasuredDifference": "मापा हुआ अंतर चित्र नहीं",
     "differenceHelp": "NASA संदर्भ चित्र सर्वेक्षण डेटा के मेल खाते जोड़े नहीं हैं, इसलिए अंतर की गणना नहीं की जाती।",
-    "moveDivider": "तुलना विभाजक खिसकाएँ",
+    "moveDivider": "तुलना विभाजक खिसकाएँ", "beforeLabel": "पहले", "afterLabel": "बाद में",
     "differenceDisabled": "मेल खाते डेटा के बिना अंतर दृश्य बंद है।",
     "dragHelp": "इस उदाहरण विन्यास को देखने के लिए विभाजक खिसकाएँ।",
     "referenceNotSpherex": "NASA संदर्भ चित्र · SPHEREx नहीं", "notObservation": "अवलोकन नहीं",

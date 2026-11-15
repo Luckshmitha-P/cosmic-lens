@@ -213,7 +213,7 @@
   "newUI": {
     "timelineEyebrow": "REAL ARCHIVE OBSERVATIONS", "timelineTitle": "Available observation timeline",
     "timelineHelp": "Browse actual records returned for this position. Dates are archive metadata; unmatched products are not a time series.",
-    "timelineError": "Could not retrieve observations for this position.", "timelineLoading": "Searching…",
+    "timelineError": "IRSA did not return observations for this position, so historical images cannot be shown. Try again when the archive is available.", "timelineLoading": "Searching…",
     "timelineSearch": "Load observations", "timelineRecord": "{{count}} archive products",
     "timelineEmpty": "Search a sky position to list available products.",
     "coverageTitle": "Instrument wavelength coverage", "coverageOnly": "Band limits only · no measured intensity values",

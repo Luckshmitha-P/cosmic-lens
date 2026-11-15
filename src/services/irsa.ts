@@ -66,6 +66,25 @@ export function formatObservationDate(value: string): string {
   return `${date.toISOString().slice(0, 10)} (MJD ${value})`
 }
 
+export function formatObservationTimestamp(value: string): string {
+  if (!value.trim()) return ''
+  const mjd = Number(value)
+  const timestamp = Number.isFinite(mjd) ? (mjd - 40587) * 86400000 : Date.parse(value)
+  const date = new Date(timestamp)
+  if (!Number.isFinite(date.getTime())) return value
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+    timeZone: 'UTC',
+    timeZoneName: 'short',
+  }).format(date)
+}
+
 export function observationDateKey(value: string): string {
   if (!value.trim()) return ''
   const mjd = Number(value)

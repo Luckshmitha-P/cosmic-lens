@@ -6,7 +6,7 @@ import {
   Menu, MoveHorizontal, Orbit, Radio, RotateCcw, Search, ShieldAlert, Sparkles, Telescope, Waves, X,
 } from 'lucide-react'
 import {
-  archiveSearchUrl, formatObservationDate, IRSA_DOCS, IRSA_EXPLORER, observationDateKey, observationTimeValue,
+  archiveSearchUrl, formatObservationDate, formatObservationTimestamp, IRSA_DOCS, IRSA_EXPLORER, observationDateKey, observationTimeValue,
   resolveCollections, searchSpherex, type CollectionMode, type Observation,
 } from './services/irsa'
 import { searchNasaImages, type NasaImage } from './services/nasa'
@@ -193,14 +193,18 @@ function SplashScreen() {
   )
 }
 
-function FitsProductViewer({ observation, onClose, compact = false }: {
-  observation: Observation; onClose?: () => void; compact?: boolean
+function FitsProductViewer({ observation, onClose, compact = false, preservePrevious = false }: {
+  observation: Observation; onClose?: () => void; compact?: boolean; preservePrevious?: boolean
 }) {
   const { t } = useTranslation()
   const viewerRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{ x: number; y: number } | null>(null)
+  const imageUrlRef = useRef('')
+  const imageUrlsRef = useRef<Set<string>>(new Set())
   const [image, setImage] = useState<FitsImage | null>(null)
   const [imageUrl, setImageUrl] = useState('')
+  const [previousImageUrl, setPreviousImageUrl] = useState('')
+  const [displayedObservation, setDisplayedObservation] = useState<Observation | null>(null)
   const [busy, setBusy] = useState(true)
   const [error, setError] = useState('')
   const [zoom, setZoom] = useState(1)
@@ -208,21 +212,57 @@ function FitsProductViewer({ observation, onClose, compact = false }: {
   const [hduChoice, setHduChoice] = useState(0)
   const [plane, setPlane] = useState(0)
 
+  useEffect(() => () => {
+    for (const url of imageUrlsRef.current) URL.revokeObjectURL(url)
+    imageUrlsRef.current.clear()
+    imageUrlRef.current = ''
+  }, [])
+
   useEffect(() => {
     let active = true
     let objectUrl = ''
-    setBusy(true); setError(''); setImage(null); setImageUrl(''); setZoom(1); setPan({ x: 0, y: 0 })
+    const controller = new AbortController()
+    if (!preservePrevious) {
+      const previousUrl = imageUrlRef.current
+      imageUrlRef.current = ''
+      if (previousUrl) {
+        URL.revokeObjectURL(previousUrl)
+        imageUrlsRef.current.delete(previousUrl)
+      }
+      setImage(null); setImageUrl(''); setPreviousImageUrl(''); setDisplayedObservation(null)
+    }
+    setBusy(true); setError(''); setZoom(1); setPan({ x: 0, y: 0 })
     void (async () => {
       try {
-        const response = await fetch(apiUrl(productPngProxyUrl(observation.accessUrl, hduChoice, plane)))
+        const response = await fetch(apiUrl(productPngProxyUrl(observation.accessUrl, hduChoice, plane)), { signal: controller.signal })
         if (!response.ok) throw new Error(response.status === 413 ? 'fits.imageTooLarge' : 'fits.productUnavailable')
         const encodedMetadata = response.headers.get('X-Fits-Metadata')
         if (!encodedMetadata) throw new Error('fits.metadataUnavailable')
         const metadataBytes = Uint8Array.from(atob(encodedMetadata), (value) => value.charCodeAt(0))
         const metadata = JSON.parse(new TextDecoder().decode(metadataBytes)) as FitsImage
         objectUrl = URL.createObjectURL(await response.blob())
-        if (active) { setImage(metadata); setImageUrl(objectUrl) }
+        if (!active) {
+          URL.revokeObjectURL(objectUrl)
+          objectUrl = ''
+          return
+        }
+        const previousUrl = imageUrlRef.current
+        imageUrlRef.current = objectUrl
+        imageUrlsRef.current.add(objectUrl)
+        setImage(metadata); setImageUrl(objectUrl); setDisplayedObservation(observation)
+        objectUrl = ''
+        if (preservePrevious && previousUrl && previousUrl !== imageUrlRef.current) {
+          setPreviousImageUrl(previousUrl)
+          window.setTimeout(() => {
+            setPreviousImageUrl((current) => current === previousUrl ? '' : current)
+            if (imageUrlRef.current !== previousUrl) {
+              URL.revokeObjectURL(previousUrl)
+              imageUrlsRef.current.delete(previousUrl)
+            }
+          }, 450)
+        }
       } catch (reason) {
+        if (!active || controller.signal.aborted) return
         console.error('SPHEREx FITS product could not be converted to PNG:', reason)
         if (active) setError(reason instanceof Error && reason.message === 'fits.imageTooLarge'
           ? reason.message : 'fits.productUnavailable')
@@ -230,8 +270,15 @@ function FitsProductViewer({ observation, onClose, compact = false }: {
         if (active) setBusy(false)
       }
     })()
-    return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl) }
-  }, [observation.accessUrl, hduChoice, plane])
+    return () => {
+      active = false
+      controller.abort()
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+        imageUrlsRef.current.delete(objectUrl)
+      }
+    }
+  }, [observation.accessUrl, hduChoice, plane, preservePrevious])
 
   useEffect(() => {
     const viewport = viewerRef.current?.querySelector('.fits-viewport')
@@ -256,12 +303,13 @@ function FitsProductViewer({ observation, onClose, compact = false }: {
   const stopPan = () => { dragRef.current = null }
   const reset = () => { setZoom(1); setPan({ x: 0, y: 0 }) }
   const errorText = error ? t(error) : ''
+  const shownObservation = displayedObservation ?? observation
 
   return (
     <div className={compact ? 'fits-inline' : 'fits-modal-backdrop'} role={compact ? undefined : 'presentation'}>
       <section className={`fits-viewer ${compact ? 'fits-viewer-compact' : ''}`} role={compact ? undefined : 'dialog'} aria-modal={compact ? undefined : true} aria-label={t('fits.title')} ref={viewerRef}>
         <div className="fits-viewer-head">
-          <div><div className="eyebrow">{t('fits.source')}</div><h2>{observation.raw.obs_id || observation.target || t('fits.product')}</h2></div>
+          <div><div className="eyebrow">{t('fits.source')}</div><h2>{shownObservation.raw.obs_id || shownObservation.target || t('fits.product')}</h2></div>
           <div className="fits-toolbar">
             <button type="button" className="icon-button" onClick={() => setZoom((value) => Math.min(8, value * 1.25))} aria-label={t('fits.zoomIn')}><span>+</span></button>
             <button type="button" className="icon-button" onClick={() => setZoom((value) => Math.max(1, value / 1.25))} aria-label={t('fits.zoomOut')}><span>−</span></button>
@@ -272,11 +320,11 @@ function FitsProductViewer({ observation, onClose, compact = false }: {
         </div>
         <div className="fits-download-row">
           {imageUrl && <a className="button-secondary" href={imageUrl} download={`${(image?.observation_id || 'spherex-image').replace(/[^a-zA-Z0-9._-]/g, '_')}.png`}><Download size={14} />{t('fits.downloadPng')}</a>}
-          <a className="button-secondary" href={productDownloadProxyUrl(observation.accessUrl)}><Download size={14} />{t('fits.download')}</a>
+          <a className="button-secondary" href={productDownloadProxyUrl(shownObservation.accessUrl)}><Download size={14} />{t('fits.download')}</a>
         </div>
         <div className="fits-product-meta">
-          <span>{t('fits.observation')}: {formatObservationDate(observation.date) || t('fits.notAvailable')}</span>
-          {observation.wavelengthMin !== null && observation.wavelengthMax !== null && <span>{t('fits.wavelength')}: {(observation.wavelengthMin * 1e6).toFixed(2)}–{(observation.wavelengthMax * 1e6).toFixed(2)} μm</span>}
+          <span>{t('fits.observation')}: {formatObservationDate(shownObservation.date) || t('fits.notAvailable')}</span>
+          {shownObservation.wavelengthMin !== null && shownObservation.wavelengthMax !== null && <span>{t('fits.wavelength')}: {(shownObservation.wavelengthMin * 1e6).toFixed(2)}–{(shownObservation.wavelengthMax * 1e6).toFixed(2)} μm</span>}
           {image && (
             <>
               <span>{image.width} × {image.height} px</span><span>{image.unit || t('fits.unitUnavailable')}</span>
@@ -288,10 +336,15 @@ function FitsProductViewer({ observation, onClose, compact = false }: {
         </div>
         {image && image.image_count > 1 && <label className="fits-plane-select">{t('fits.extension')}<select value={hduChoice} onChange={(event) => { setHduChoice(Number(event.target.value)); setPlane(0) }}>{Array.from({ length: image.image_count }, (_, index) => <option key={index} value={index}>{t('fits.extensionOption', { number: index + 1 })}</option>)}</select></label>}
         {image && image.plane_count > 1 && <label className="fits-plane-select">{t('fits.plane')}<select value={plane} onChange={(event) => setPlane(Number(event.target.value))}>{Array.from({ length: image.plane_count }, (_, index) => <option key={index} value={index}>{t('fits.planeOption', { number: index + 1 })}</option>)}</select></label>}
-        <div className="fits-viewport" onPointerDown={startPan} onPointerMove={movePan} onPointerUp={stopPan} onPointerCancel={stopPan}>
-          {busy && <div className="loading-state"><span className="spinner" />{t('fits.loading')}</div>}
-          {!busy && error && <div className="empty-state"><Image size={20} /><b>{t('fits.errorTitle')}</b><span>{errorText}</span></div>}
-          {!busy && !error && imageUrl && <img src={imageUrl} className="fits-canvas" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} alt={t('fits.imageAlt')} />}
+        <div className={`fits-viewport ${preservePrevious ? 'fits-viewport-transition' : ''} ${busy && preservePrevious && imageUrl ? 'fits-viewport-loading-next' : ''}`} onPointerDown={startPan} onPointerMove={movePan} onPointerUp={stopPan} onPointerCancel={stopPan}>
+          {preservePrevious ? <div className="fits-canvas-stack">
+            {previousImageUrl && <img key={`previous-${previousImageUrl}`} src={previousImageUrl} className="fits-canvas fits-canvas-previous" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} alt="" aria-hidden="true" />}
+            {imageUrl && <img key={imageUrl} src={imageUrl} className="fits-canvas fits-canvas-current" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} alt={t('fits.imageAlt')} />}
+          </div> : imageUrl && <img src={imageUrl} className="fits-canvas" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} alt={t('fits.imageAlt')} />}
+          {busy && (!preservePrevious || !imageUrl) && <div className="loading-state"><span className="spinner" />{t('fits.loading')}</div>}
+          {busy && preservePrevious && imageUrl && <div className="fits-transition-status" role="status"><span className="spinner" />{t('fits.loading')}</div>}
+          {!busy && error && preservePrevious && imageUrl && <div className="fits-transition-error" role="status"><b>{t('fits.errorTitle')}</b><span>{errorText}</span></div>}
+          {!busy && error && (!preservePrevious || !imageUrl) && <div className="empty-state"><Image size={20} /><b>{t('fits.errorTitle')}</b><span>{errorText}</span></div>}
         </div>
         {image && <div className="fits-viewer-foot"><span>{t('fits.staticImage')} · {t('fits.axis')}: {image.axis1} × {image.axis2}</span><span>{t('fits.zoom')}: {Math.round(zoom * 100)}%</span></div>}
       </section>
@@ -558,7 +611,7 @@ function TimeMachine({ initialPosition, navigate, onComparisonChange, onOpenProd
       }
       const result = await response.json() as FitsComparison
       setComparison(result)
-      onComparisonChange({ result, ra: Number(ra), dec: Number(dec), earlierDate: formatObservationDate(earlier.date), laterDate: formatObservationDate(later.date) })
+      onComparisonChange({ result, ra: Number(ra), dec: Number(dec), earlierDate: formatObservationTimestamp(earlier.date), laterDate: formatObservationTimestamp(later.date) })
     } catch (reason) {
       console.error('SPHEREx observation comparison failed:', reason)
       setComparisonError(t('newUI.comparisonUnavailable'))
@@ -600,11 +653,14 @@ function TimeMachine({ initialPosition, navigate, onComparisonChange, onOpenProd
         </form>
         {error && <div className="empty-inline">{error}</div>}
         {!loading && observations.length > 0 && <>
-          <div className="timeline-selected"><span>{t('newUI.timelineRecord', { count: observations.length })}</span><strong>{formatObservationDate(observations[selectedIndex]?.date ?? '') || t('fits.notAvailable')}</strong>
+          <div className="timeline-selected" aria-live="polite"><div><span>{t('newUI.timelineRecord', { count: observations.length })}</span><strong>{formatObservationTimestamp(observations[selectedIndex]?.date ?? '') || t('fits.notAvailable')}</strong></div>
             <button type="button" className="text-button" onClick={() => onOpenProduct(observations[selectedIndex])}>{t('explorer.openProduct')} <ArrowUpRight size={13} /></button></div>
-          {observations.length > 1 && <input className="comparison-range" aria-label={t('newUI.timelineTitle')} type="range" min="0" max={observations.length - 1} value={selectedIndex} onChange={(event) => setSelectedIndex(Number(event.target.value))} />}
-          <div className="timeline-records">{observations.map((observation, index) => <button key={`${observation.accessUrl}-${index}`} className={index === selectedIndex ? 'timeline-record active' : 'timeline-record'} onClick={() => setSelectedIndex(index)}><span>{formatObservationDate(observation.date) || t('fits.notAvailable')}</span><small>{observation.raw.obs_id || observation.target || t('explorer.observation')}</small></button>)}</div>
-          {observations[selectedIndex] && <FitsProductViewer key={observations[selectedIndex].accessUrl} observation={observations[selectedIndex]} compact />}
+          {observations[selectedIndex] && <FitsProductViewer observation={observations[selectedIndex]} compact preservePrevious />}
+          {observations.length > 1 && <div className="timeline-range-wrap">
+            <input className="comparison-range timeline-range" aria-label={t('newUI.timelineTitle')} aria-valuetext={formatObservationTimestamp(observations[selectedIndex].date)} type="range" min="0" max={observations.length - 1} value={selectedIndex} onChange={(event) => setSelectedIndex(Number(event.target.value))} />
+            <div className="timeline-range-labels"><span>{formatObservationTimestamp(observations[0].date)}</span><span>{formatObservationTimestamp(observations[observations.length - 1].date)}</span></div>
+          </div>}
+          <div className="timeline-records">{observations.map((observation, index) => <button type="button" key={`${observation.accessUrl}-${index}`} className={index === selectedIndex ? 'timeline-record active' : 'timeline-record'} aria-pressed={index === selectedIndex} onClick={() => setSelectedIndex(index)}><span>{formatObservationTimestamp(observation.date) || t('fits.notAvailable')}</span><small>{observation.raw.obs_id || observation.target || t('explorer.observation')}</small></button>)}</div>
         </>}
         {!loading && observations.length === 0 && <div className="empty-inline">{t('newUI.timelineEmpty')}</div>}
       </section>
@@ -614,15 +670,15 @@ function TimeMachine({ initialPosition, navigate, onComparisonChange, onOpenProd
         <p>{t('newUI.comparisonHelp')}</p>
         {bandChoices.length > 0 && <div className="comparison-selectors">
           <label>{t('newUI.bandLabel')}<select value={selectedBand} onChange={(event) => { setBand(event.target.value); setEarlierIndex(0); setLaterIndex(1); setComparison(null); onComparisonChange(null) }}>{bandChoices.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
-          <label>{t('newUI.earlierObservation')}<select value={earlierIndex} onChange={(event) => { setEarlierIndex(Number(event.target.value)); setComparison(null); onComparisonChange(null) }}>{pairOptions.map((observation, index) => <option key={`${observation.accessUrl}-${index}`} value={index}>{formatObservationDate(observation.date)}</option>)}</select></label>
-          <label>{t('newUI.laterObservation')}<select value={laterIndex} onChange={(event) => { setLaterIndex(Number(event.target.value)); setComparison(null); onComparisonChange(null) }}>{pairOptions.map((observation, index) => <option key={`${observation.accessUrl}-${index}`} value={index}>{formatObservationDate(observation.date)}</option>)}</select></label>
+          <label>{t('newUI.earlierObservation')}<select value={earlierIndex} onChange={(event) => { setEarlierIndex(Number(event.target.value)); setComparison(null); onComparisonChange(null) }}>{pairOptions.map((observation, index) => <option key={`${observation.accessUrl}-${index}`} value={index}>{formatObservationTimestamp(observation.date)}</option>)}</select></label>
+          <label>{t('newUI.laterObservation')}<select value={laterIndex} onChange={(event) => { setLaterIndex(Number(event.target.value)); setComparison(null); onComparisonChange(null) }}>{pairOptions.map((observation, index) => <option key={`${observation.accessUrl}-${index}`} value={index}>{formatObservationTimestamp(observation.date)}</option>)}</select></label>
           <button type="button" className="button-primary" onClick={() => void compareObservations()} disabled={comparing || !earlier || !later || earlierIndex === laterIndex}>{comparing ? <span className="spinner" /> : <Activity size={14} />}{comparing ? t('newUI.analyzing') : t('newUI.compareNow')}</button>
         </div>}
         {!loading && observations.length > 0 && bandChoices.length === 0 && <div className="empty-inline">{t('newUI.noMatchingBand')}</div>}
         {comparisonError && <div className="clean-data-note">{comparisonError}</div>}
         {comparing && <div className="loading-state"><span className="spinner" />{t('newUI.analyzing')}</div>}
         {comparison && <div className="comparison-result">
-          <div className="comparison-date-row"><span>{t('newUI.earlierObservation')}: <b>{formatObservationDate(earlier?.date ?? '')}</b></span><span>{t('newUI.laterObservation')}: <b>{formatObservationDate(later?.date ?? '')}</b></span><span>{t('newUI.bandLabel')}: <b>{comparison.earlier.band}</b></span><span>{t('fits.coordinates')}: <b>{comparison.earlier.center_ra.toFixed(5)}°, {comparison.earlier.center_dec.toFixed(5)}°</b></span></div>
+          <div className="comparison-date-row"><span>{t('newUI.earlierObservation')}: <b>{formatObservationTimestamp(earlier?.date ?? '')}</b></span><span>{t('newUI.laterObservation')}: <b>{formatObservationTimestamp(later?.date ?? '')}</b></span><span>{t('newUI.bandLabel')}: <b>{comparison.earlier.band}</b></span><span>{t('fits.coordinates')}: <b>{comparison.earlier.center_ra.toFixed(5)}°, {comparison.earlier.center_dec.toFixed(5)}°</b></span></div>
           <div className="mode-tabs comparison-mode-tabs" role="group" aria-label={t('newUI.comparisonTitle')}>
             <button type="button" className={mode === 'side' ? 'mode-selected' : ''} onClick={() => selectMode('side')}><ArrowLeftRight size={14} />{t('time.sideBySide')}</button>
             <button type="button" className={mode === 'slider' ? 'mode-selected' : ''} onClick={() => selectMode('slider')}><MoveHorizontal size={14} />{t('time.slider')}</button>
@@ -639,13 +695,13 @@ function TimeMachine({ initialPosition, navigate, onComparisonChange, onOpenProd
           <div className="science-viewport" ref={comparisonViewerRef} onPointerDown={startComparisonPan} onPointerMove={moveComparisonPan} onPointerUp={() => { comparisonDragRef.current = null }} onPointerCancel={() => { comparisonDragRef.current = null }}>
           <div className={`science-images mode-${mode}`} style={{ transform: `translate(${comparisonPan.x}px, ${comparisonPan.y}px) scale(${comparisonZoom})` }}>
             {mode === 'side' && <>
-              <SourceImage comparison={comparison} image={comparison.images.earlier_png} date={formatObservationDate(earlier?.date ?? '')} side="earlier" selectedSourceId={selectedSourceId} onSelect={setSelectedSourceId} />
-              <SourceImage comparison={comparison} image={comparison.images.later_png} date={formatObservationDate(later?.date ?? '')} side="later" selectedSourceId={selectedSourceId} onSelect={setSelectedSourceId} />
+              <SourceImage comparison={comparison} image={comparison.images.earlier_png} date={formatObservationTimestamp(earlier?.date ?? '')} side="earlier" selectedSourceId={selectedSourceId} onSelect={setSelectedSourceId} />
+              <SourceImage comparison={comparison} image={comparison.images.later_png} date={formatObservationTimestamp(later?.date ?? '')} side="later" selectedSourceId={selectedSourceId} onSelect={setSelectedSourceId} />
             </>}
             {(mode === 'slider' || mode === 'overlay') && <div className="science-slider-stage" style={{ aspectRatio: `${comparison.comparison.width} / ${comparison.comparison.height}` }}>
-              <SourceImage comparison={comparison} image={comparison.images.later_png} date={formatObservationDate(later?.date ?? '')} side="later" selectedSourceId={selectedSourceId} onSelect={setSelectedSourceId} />
+              <SourceImage comparison={comparison} image={comparison.images.later_png} date={formatObservationTimestamp(later?.date ?? '')} side="later" selectedSourceId={selectedSourceId} onSelect={setSelectedSourceId} />
               <div className="science-old-clip" style={mode === 'slider' ? { clipPath: `inset(0 ${100 - position}% 0 0)` } : undefined}>
-                <SourceImage comparison={comparison} image={comparison.images.earlier_png} date={formatObservationDate(earlier?.date ?? '')} side="earlier" selectedSourceId={selectedSourceId} onSelect={setSelectedSourceId} />
+                <SourceImage comparison={comparison} image={comparison.images.earlier_png} date={formatObservationTimestamp(earlier?.date ?? '')} side="earlier" selectedSourceId={selectedSourceId} onSelect={setSelectedSourceId} />
               </div>
               {mode === 'slider' && <div className="science-slider-handle" style={{ left: `${position}%` }} />}
             </div>}
